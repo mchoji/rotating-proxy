@@ -1,0 +1,20 @@
+version: "3.9"
+
+# shared volume for configuration files
+x-svc-cfg-volume:
+    &svc-cfg-volume
+    type: bind
+    source: ./config
+    target: /usr/local/etc
+
+services:
+    app:
+        build: ./app
+        volumes:
+            - <<: *svc-cfg-volume
+        env_file:
+            - config.env
+        ports:
+            - "5566:5566"
+            - "4444:4444"
+

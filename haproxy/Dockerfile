@@ -1,0 +1,1 @@
+FROM haproxy:lts-alpine
