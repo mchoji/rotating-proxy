@@ -225,7 +225,7 @@ ADD start.rb /usr/local/bin/start.rb
 ADD newnym.sh /usr/local/bin/newnym.sh
 ADD uncachable /etc/polipo/uncachable
 
-RUN gem install excon -v 0.44.4 \
+RUN gem install excon \
 	&& chmod +x /usr/local/bin/start.rb \
 	&& chmod +x /usr/local/bin/newnym.sh
 
