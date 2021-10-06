@@ -2,6 +2,23 @@
 require 'erb'
 require 'excon'
 require 'logger'
+require 'uri'
+
+# Add custom URI schemes
+module URI
+  class SOCKS4 < Generic
+    DEFAULT_PORT = 9050
+  end
+  class SOCKS4A < Generic
+    DEFAULT_PORT = 9050
+  end
+  class SOCKS5 < Generic
+    DEFAULT_PORT = 9050
+  end
+  @@schemes['SOCKS4'] = SOCKS4
+  @@schemes['SOCKS4A'] = SOCKS4A
+  @@schemes['SOCKS5'] = SOCKS5
+end
 
 $logger = Logger.new(STDOUT, ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO)
 
@@ -83,13 +100,13 @@ module Service
 
 
   class Tor < Base
-    attr_reader :port, :control_port, :addr, :proto
+    attr_reader :port, :control_port, :host, :scheme
 
     def initialize(port, control_port)
         @port = port
         @control_port = control_port
-        @addr = '127.0.0.1'
-        @proto = 'socks5'
+        @host = '127.0.0.1'
+        @scheme = 'socks5'
     end
 
     def data_directory
@@ -137,11 +154,11 @@ module Service
         File.delete(pid_file)
       end
 
-      if ["socks4", "socks4a", "socks5"].include?(upstream_proto)
+      if ["socks4", "socks4a", "socks5"].include?(upstream_scheme)
         self.class.fire_and_forget(executable,
           "proxyPort=#{port}",
-          "socksParentProxy=#{upstream_addr}:#{upstream_port}",
-          "socksProxyType=#{upstream_proto}",
+          "socksParentProxy=#{upstream_host}:#{upstream_port}",
+          "socksProxyType=#{upstream_scheme}",
           "diskCacheRoot=''",
           "disableLocalInterface=true",
           "allowedClients=127.0.0.1",
@@ -155,10 +172,10 @@ module Service
           "allowedPorts='1-65535'",
           "tunnelAllowedPorts='1-65535'",
           "| logger -t 'polipo' 2>&1")
-      elsif upstream_proto == "http"
+      elsif upstream_scheme == "http"
         self.class.fire_and_forget(executable,
           "proxyPort=#{port}",
-          "parentProxy=#{upstream_addr}:#{upstream_port}",
+          "parentProxy=#{upstream_host}:#{upstream_port}",
           "diskCacheRoot=''",
           "disableLocalInterface=true",
           "allowedClients=127.0.0.1",
@@ -179,12 +196,12 @@ module Service
       @upstream.port
     end
 
-    def upstream_proto
-      @upstream.proto
+    def upstream_scheme
+      @upstream.scheme == "socks4"? "socks4a" : @upstream.scheme
     end
 
-    def upstream_addr
-      @upstream.addr
+    def upstream_host
+      @upstream.host
     end
 
   end
@@ -199,6 +216,11 @@ module Service
       Excon.defaults[:ssl_verify_peer] = ssl_verify
     end
 
+    def polipo_port
+      20000 + id
+    end
+    alias_method :port, :polipo_port
+
     def test_url
       ENV['test_url'] || 'http://icanhazip.com'
     end
@@ -206,7 +228,14 @@ module Service
     def ssl_verify
       ENV['ssl_verify'] || true
     end
+
+    def working?
+      Excon.get(test_url, proxy: "http://127.0.0.1:#{port}", :read_timeout => 20).status == 200
+    rescue
+      false
+    end
   end
+
 
   class TorProxy < Proxy
     attr_reader :tor
@@ -242,24 +271,31 @@ module Service
     def tor_control_port
       30000 + id
     end
+  end
 
-    def polipo_port
-      tor_port + 10000
-    end
-    alias_method :port, :polipo_port
 
-    def test_url
-      ENV['test_url'] || 'http://icanhazip.com'
-    end
-
-    def ssl_verify
-      ENV['ssl_verify'] || true
+  class PubProxy < Proxy
+    attr_reader :proxy
+    def initialize(id, uri_str)
+      super(id)
+      @proxy = URI.parse(uri_str)
+      @polipo = Polipo.new(polipo_port, upstream: proxy)
     end
 
-    def working?
-      Excon.get(test_url, proxy: "http://127.0.0.1:#{port}", :read_timeout => 20).status == 200
-    rescue
-      false
+    def start
+      $logger.info "starting proxy id #{id}"
+      @polipo.start
+    end
+
+    def stop
+      $logger.info "stopping proxy id #{id}"
+      @polipo.stop
+    end
+
+    def restart
+      stop
+      sleep 5
+      start
     end
   end
 
@@ -322,27 +358,40 @@ if ENV['mode'] == 'tor'
     proxy.start
     proxies << proxy
   end
+else
+  file = File.open(proxy_list)
+  file_data = file.readlines.map(&:chomp)
+  if ENV['pool_size'].to_i > file_data.length()
+    $logger.warn "Supplied pool_size is greater than supplied proxy list. pool_size will be adjusted to #{file_data.length()}"
+  end
+  proxy_instances = [ENV['pool_size'].to_i, file_data.length()].min
+  proxy_instances.times.each do |id|
+    proxy = Service::PubProxy.new(id, file_data[id])
+    haproxy.add_backend(proxy)
+    proxy.start
+    proxies << proxy
+  end
 end
 
 haproxy.start
 
-if ENV['mode'] == 'tor'
-  sleep 60
+sleep 90
 
-  loop do
+loop do
+  if ENV['mode'] == 'tor'
     $logger.info "resetting circuits"
     proxies.each do |proxy|
       $logger.info "reset nym for #{proxy.id} (port #{proxy.port})"
       proxy.tor.newnym
     end
-
-    $logger.info "testing proxies"
-    proxies.each do |proxy|
-      $logger.info "testing proxy #{proxy.id} (port #{proxy.port})"
-      proxy.restart unless proxy.working?
-    end
-
-    $logger.info "sleeping for 60 seconds"
-    sleep 60
   end
+
+  $logger.info "testing proxies"
+  proxies.each do |proxy|
+    $logger.info "testing proxy #{proxy.id} (port #{proxy.port})"
+    proxy.restart unless proxy.working?
+  end
+
+  $logger.info "sleeping for 90 seconds"
+  sleep 90
 end

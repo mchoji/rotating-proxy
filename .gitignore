@@ -1,1 +1,2 @@
 config/haproxy.cfg
+config/proxy.lst
