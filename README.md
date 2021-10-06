@@ -43,6 +43,26 @@ You can test proxy with
 curl --proxy 127.0.0.1:5566 https://api.ipify.org
 ```
 
+## Operation Modes
+
+There are two implemented operation modes:
+  - Tor
+  - Proxy list
+
+The behaviour of the application depends on the variables defined at [config.env](config.env), which can be overridden by shell variables with the same name.
+
+```sh
+pool_size=25
+test_url=https://api.ipify.org
+ssl_verify=true
+mode=tor
+```
+
+`pool_size` defines the number of backend proxies to be used. `test_url` is used during operation to check if a given proxy is responding.
+`ssl_verify` defines if certificates should be verified or not. `mode` dictates the operation mode (acceptable values are `tor` or `list`).
+
+If `mode=list` is used, a file named `proxy.lst` should exist at [config](config). The file should contain a list of proxies, one per line, in the format `[scheme]://[host]:[port]`, for instance `socks5://127.0.0.1`. It is possible to use `http`, `socks4` and `socks5` proxies, even mixed in the same list.
+
 
 ## License
 
