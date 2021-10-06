@@ -83,11 +83,13 @@ module Service
 
 
   class Tor < Base
-    attr_reader :port, :control_port
+    attr_reader :port, :control_port, :addr, :proto
 
     def initialize(port, control_port)
         @port = port
         @control_port = control_port
+        @addr = '127.0.0.1'
+        @proto = 'socks5'
     end
 
     def data_directory
@@ -123,9 +125,9 @@ module Service
   end
 
   class Polipo < Base
-    def initialize(port, tor:)
+    def initialize(port, upstream:)
       super(port)
-      @tor = tor
+      @upstream = upstream
     end
 
     def start
@@ -134,39 +136,85 @@ module Service
       if File.exists?(pid_file)
         File.delete(pid_file)
       end
-      self.class.fire_and_forget(executable,
-        "proxyPort=#{port}",
-        "socksParentProxy=127.0.0.1:#{tor_port}",
-        "socksProxyType=socks5",
-        "diskCacheRoot=''",
-        "disableLocalInterface=true",
-        "allowedClients=127.0.0.1",
-        "localDocumentRoot=''",
-        "disableConfiguration=true",
-        "dnsUseGethostbyname='yes'",
-        "logSyslog=true",
-        "daemonise=true",
-        "pidFile=#{pid_file}",
-        "disableVia=true",
-        "allowedPorts='1-65535'",
-        "tunnelAllowedPorts='1-65535'",
-        "| logger -t 'polipo' 2>&1")
+
+      if ["socks4", "socks4a", "socks5"].include?(upstream_proto)
+        self.class.fire_and_forget(executable,
+          "proxyPort=#{port}",
+          "socksParentProxy=#{upstream_addr}:#{upstream_port}",
+          "socksProxyType=#{upstream_proto}",
+          "diskCacheRoot=''",
+          "disableLocalInterface=true",
+          "allowedClients=127.0.0.1",
+          "localDocumentRoot=''",
+          "disableConfiguration=true",
+          "dnsUseGethostbyname='yes'",
+          "logSyslog=true",
+          "daemonise=true",
+          "pidFile=#{pid_file}",
+          "disableVia=true",
+          "allowedPorts='1-65535'",
+          "tunnelAllowedPorts='1-65535'",
+          "| logger -t 'polipo' 2>&1")
+      elsif upstream_proto == "http"
+        self.class.fire_and_forget(executable,
+          "proxyPort=#{port}",
+          "parentProxy=#{upstream_addr}:#{upstream_port}",
+          "diskCacheRoot=''",
+          "disableLocalInterface=true",
+          "allowedClients=127.0.0.1",
+          "localDocumentRoot=''",
+          "disableConfiguration=true",
+          "dnsUseGethostbyname='yes'",
+          "logSyslog=true",
+          "daemonise=true",
+          "pidFile=#{pid_file}",
+          "disableVia=true",
+          "allowedPorts='1-65535'",
+          "tunnelAllowedPorts='1-65535'",
+          "| logger -t 'polipo' 2>&1")
+      end
     end
 
-    def tor_port
-      @tor.port
+    def upstream_port
+      @upstream.port
     end
+
+    def upstream_proto
+      @upstream.proto
+    end
+
+    def upstream_addr
+      @upstream.addr
+    end
+
   end
+
 
   class Proxy
     attr_reader :id
-    attr_reader :tor, :polipo
+    attr_reader :polipo
 
     def initialize(id)
       @id = id
-      @tor = Tor.new(tor_port, tor_control_port)
-      @polipo = Polipo.new(polipo_port, tor: tor)
       Excon.defaults[:ssl_verify_peer] = ssl_verify
+    end
+
+    def test_url
+      ENV['test_url'] || 'http://icanhazip.com'
+    end
+
+    def ssl_verify
+      ENV['ssl_verify'] || true
+    end
+  end
+
+  class TorProxy < Proxy
+    attr_reader :tor
+
+    def initialize(id)
+      super
+      @tor = Tor.new(tor_port, tor_control_port)
+      @polipo = Polipo.new(polipo_port, upstream: tor)
     end
 
     def start
@@ -242,7 +290,7 @@ module Service
     end
 
     def add_backend(backend)
-      @backends << {:name => 'tor', :addr => '127.0.0.1', :port => backend.port}
+      @backends << {:name => 'proxy', :addr => '127.0.0.1', :port => backend.port}
     end
 
     private
@@ -252,13 +300,24 @@ module Service
   end
 end
 
+# validate configuration
+abort "Invalid mode #{ENV['mode']}" unless ["tor", "list"].include?(ENV['mode'])
+abort "Pool size should be greater than 0!" unless ENV['pool_size'].to_i > 0
+ha_template = '/usr/local/etc/haproxy.cfg.erb'
+abort "Missing template config file at #{ha_template}" unless File.exists?(ha_template)
+proxy_list = '/usr/local/etc/proxy.lst'
+if ENV['mode'] == 'list'
+  abort "Mode is set to 'list' but #{proxy_list} was not found!" unless File.exists?(proxy_list)
+end
+
+
 haproxy = Service::Haproxy.new
 proxies = []
 
-if ENV['mode'].downcase == 'tor'
+if ENV['mode'] == 'tor'
   tor_instances = ENV['pool_size'] || 10
   tor_instances.to_i.times.each do |id|
-    proxy = Service::Proxy.new(id)
+    proxy = Service::TorProxy.new(id)
     haproxy.add_backend(proxy)
     proxy.start
     proxies << proxy
@@ -267,7 +326,7 @@ end
 
 haproxy.start
 
-if ENV['mode'].downcase == 'tor'
+if ENV['mode'] == 'tor'
   sleep 60
 
   loop do

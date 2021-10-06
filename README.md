@@ -40,7 +40,7 @@ and an HTTP proxy at http://127.0.0.1:5566.
 You can test proxy with
 
 ```sh
-curl --proxy 127.0.0.1:5566 https://api.my-ip.io/ip
+curl --proxy 127.0.0.1:5566 https://api.ipify.org
 ```
 
 
